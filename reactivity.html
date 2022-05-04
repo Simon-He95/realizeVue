@@ -1,0 +1,341 @@
+<script>
+  const reactiveMap = new Map
+  let shouldTrack = true
+  let activeEffect
+  const bucket = new WeakMap
+  const effectStack = []
+  const MAP_ITERATE_KEY = Symbol()
+  const ITERATE_KEY = Symbol()
+
+  function reactive(obj) {
+    const existionProxy = reactiveMap.get(obj)
+    if (existionProxy)
+      return existionProxy
+    const proxy = createReactive(obj)
+    reactiveMap.set(obj, proxy)
+    return proxy
+  }
+  function shallowReactive(obj) {
+    return createReactive(obj, true, false)
+  }
+  function readonly(obj) {
+    return createReactive(obj, false, true)
+  }
+  function shallowReadonly(obj) {
+    return createReactive(obj, true, true)
+  }
+  function ref(val) {
+    const wrapper = {
+      value: val,
+      __v_isRef: true
+    }
+    return reactive(wrapper)
+  }
+  function isRef(val) {
+    return val && val.__v_isRef
+  }
+  function toRef(obj, key) {
+    return {
+      get value() {
+        return obj[key]
+      },
+      set value(newVal) {
+        obj[key] = newVal
+      },
+      __v_isRef: true
+    }
+  }
+  function toRefs(obj) {
+    const ret = {}
+    for (const key in obj) {
+      ret[key] = toRef(obj, key)
+    }
+    return ret
+  }
+
+  function MapOrSet(target) {
+    return /Map|Set/.test(Object.prototype.toString.call(target))
+  }
+  function track(target, key) {
+    if (!activeEffect || !shouldTrack) return
+    let depsMap = bucket.get(target)
+    if (!depsMap)
+      bucket.set(target, depsMap = new Map)
+    let deps = depsMap.get(key)
+    if (!deps)
+      depsMap.set(key, deps = new Set)
+    deps.add(activeEffect)
+    activeEffect.deps.push(deps)
+  }
+
+  function trigger(target, key, type, newVal) {
+    const depsMap = bucket.get(target)
+    if (!depsMap) return
+    const effectsToRun = new Set
+    const effects = depsMap.get(key)
+    addEffectFn(effects, effectsToRun)
+
+    if (type === 'ADD' || type === 'DELETE') {
+      const iterateEffects = depsMap.get(ITERATE_KEY)
+      addEffectFn(iterateEffects, effectsToRun)
+    }
+
+    if ((type === 'ADD' || type === 'DELETE') && MapOrSet(target)) {
+      const iterateEffects = depsMap.get(MAP_ITERATE_KEY)
+      addEffectFn(iterateEffects, effectsToRun)
+    }
+
+    if (type === 'ADD' && Array.isArray(target)) {
+      const lengthEffects = depsMap.get('length')
+      addEffectFn(lengthEffects, effectsToRun)
+    }
+    if (Array.isArray(target) && key === 'length') {
+      depsMap.forEach((effects, key) => {
+        if (key >= newVal) {
+          addEffectFn(effects, effectsToRun)
+        }
+      })
+    }
+
+    effectsToRun.forEach(effect => {
+      if (effect.options.scheduler)
+        effect.options.scheduler(effect)
+      else
+        effect()
+    })
+  }
+
+  function addEffectFn(effects, target) {
+    effects && effects.forEach(effectFn => {
+      if (effectFn !== activeEffect)
+        target.add(effectFn)
+    })
+  }
+
+  const arrayInstruments = {}
+    ;['includes', 'indexOf', 'lastIndexOf'].forEach(method => {
+      const originMethod = Array.prototype[method]
+      arrayInstruments[method] = function (...args) {
+        return originMethod.apply(this, args) || originMethod.apply(this.raw, args)
+      }
+    })
+    ;['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse'].forEach(method => {
+      const originMethod = Array.prototype[method]
+      arrayInstruments[method] = function (...args) {
+        shouldTrack = false
+        const res = originMethod.apply(this, args) || originMethod.apply(this.raw, args)
+        shouldTrack = true
+        return res
+      }
+    })
+
+  const wrap = (val) => typeof val === 'object' ? reactive(val) : val
+
+  const mutableInstruments = {
+    get(key) {
+      const target = this.raw
+      const had = target.has(key)
+      track(target, key)
+      if (had) {
+        const res = target.get(key)
+        return wrap(res)
+      }
+    },
+    set(key, val) {
+      const target = this.raw
+      const had = target.has(key)
+      const rawValue = val.raw || val
+      const oldVal = target.get(key)
+      const res = target.set(key, rawValue)
+      if (!had) {
+        trigger(target, key, 'ADD')
+      } else if (val !== oldVal && (oldVal === oldVal || val === val)) {
+        trigger(target, key, 'SET')
+      }
+      return res
+    },
+    add(key) {
+      const target = this.raw
+      const had = target.has(key)
+      const res = target.add(key)
+      if (!had) {
+        trigger(target, key, 'SET')
+      }
+      return res
+    },
+    delete(key) {
+      const target = this.raw
+      const had = target.has(key)
+      const res = target.delete(key)
+      if (had) {
+        trigger(target, key, 'DELETE')
+      }
+      return res
+    },
+    forEach(callback) {
+      const target = this.raw
+      track(target, ITERATE_KEY)
+      target.forEach((v, k) => callback(wrap(v), wrap(k), this))
+    },
+    [Symbol.iterator]: iterationMethod,
+    entries: iterationMethod,
+    values: valuesIterationMethod,
+    keys: keysIterationMethod
+  }
+
+  function iterationMethod() {
+    const target = this.raw
+    const itr = target[Symbol.iterator]()
+    track(target, ITERATE_KEY)
+    return {
+      next() {
+        const { value, done } = itr.next()
+        return {
+          value: value ? [wrap(value[0]), wrap(value[1])] : value,
+          done
+        }
+      },
+      [Symbol.iterator]() {
+        return this
+      }
+    }
+  }
+
+  function valuesIterationMethod() {
+    const target = this.raw
+    const itr = target.values()
+    track(target, ITERATE_KEY)
+    return {
+      next() {
+        const { value, done } = itr.next()
+        return {
+          value: wrap(value),
+          done
+        }
+      },
+      [Symbol.iterator]() {
+        return this
+      }
+    }
+  }
+
+  function keysIterationMethod() {
+    const target = this.raw
+    const itr = target.keys()
+    track(target, MAP_ITERATE_KEY)
+    return {
+      next() {
+        const { value, done } = itr.next()
+        return {
+          value: wrap(value),
+          done
+        }
+      },
+      [Symbol.iterator]() {
+        return this
+      }
+    }
+  }
+
+  function watchEffect(fn, options = {}) {
+    const effectFn = () => {
+      cleanup(effectFn)
+      activeEffect = effectFn
+      effectStack.push(effectFn)
+      const res = fn()
+      effectStack.pop()
+      activeEffect = effectStack[effectStack.length - 1]
+      return res
+    }
+    effectFn.options = options
+    effectFn.deps = []
+    if (!options.lazy)
+      effectFn()
+    return effectFn
+  }
+
+  function cleanup(effectFn) {
+    for (let i = 0; i < effectFn.deps.length; i++) {
+      const deps = effectFn.deps[i]
+      deps.delete(effectFn)
+    }
+    effectFn.deps.length = 0
+  }
+
+  function createReactive(obj, isShallow = false, isReadonly = false) {
+    return new Proxy(obj, {
+      get(target, key, receiver) {
+        if (key === 'raw')
+          return target
+        if (Array.isArray(target) && arrayInstruments.hasOwnProperty(key))
+          return Reflect.get(arrayInstruments, key, receiver)
+        if (!isReadonly && typeof key !== 'symbol')
+          track(target, key)
+        const res = Reflect.get(target, key)
+        if (isShallow)
+          return res
+        if (key === 'size') {
+          track(target, ITERATE_KEY)
+          return res
+        }
+        if (typeof res === 'object' && res !== null)
+          return isReadonly ? readonly(res) : reactive(res)
+        if (MapOrSet(target))
+          return Reflect.get(mutableInstruments, key, receiver)
+        return res
+      },
+      set(target, key, newVal, receiver) {
+        if (isReadonly) {
+          console.warn(`属性 ${key} 为只读属性，不可修改`)
+          return true
+        }
+        const oldVal = target[key]
+        const type = Array.isArray(target)
+          ? Number(key) < target.length ? 'SET' : 'ADD'
+          : Object.prototype.hasOwnProperty(target, key) ? 'SET' : 'ADD'
+
+        const res = Reflect.set(target, key, newVal, receiver)
+        if (target === receiver.raw) {
+          if (oldVal !== newVal && (oldVal === oldVal || newVal === newVal)) {
+            trigger(target, key, type, newVal)
+          }
+        }
+        return res
+      },
+      has(target, key) {
+        track(target, key)
+        return Reflect.has(target, key)
+      },
+      deleteProperty(target, key) {
+        if (isReadonly) {
+          console.warn(`属性 ${key} 为只读属性，不可修改`)
+          return true
+        }
+        const had = Object.prototype.hasOwnProperty(target, key)
+        const res = Reflect.deleteProperty(target, key)
+        if (had && res) {
+          trigger(target, key, 'DELETE')
+        }
+        return res
+      },
+      ownKeys(target) {
+        track(target, ITERATE_KEY)
+        return Reflect.ownKeys(target)
+      }
+    })
+  }
+
+
+  const p = reactive(new Map([
+    ['key1', 'value1'],
+    ['key2', 'value2']
+  ]))
+
+  watchEffect(() => {
+    for (const value of p.keys()) {
+      console.log(value)
+    }
+  })
+
+  p.set('key3', 'value3')
+</script>
