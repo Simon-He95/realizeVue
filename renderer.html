@@ -1,0 +1,352 @@
+<div id="app"></div>
+<script>
+
+  function shouldSetAsProps(el, key) {
+    if (key === 'input' || el.tagName === 'form') return false
+    return key in el
+  }
+
+  function lis(nums) {
+    let preIndex = [],
+      result = []
+    for (let i = 0; i <= nums.length - 1; i++) {
+      const current = nums[i]
+      const last = nums[result[result.length - 1]]
+      if (current > last || last === undefined) {
+        preIndex[i] = result[result.length - 1]
+        result.push(i)
+        continue
+      }
+      let start = 0,
+        end = result.length - 1
+      while (start < end) {
+        const mid = (start + end) >> 1
+        if (current < nums[result[mid]]) {
+          end = mid
+        } else {
+          start = mid + 1
+        }
+      }
+      if (current < nums[result[start]]) {
+        preIndex[i] = result[start - 1]
+        result[start] = i
+      }
+    }
+    let len = result.length
+    let prev = result[len - 1]
+    while (len-- > 0) {
+      result[len] = prev
+      prev = preIndex[result[len]]
+    }
+    return result
+  }
+
+  const Fragment = Symbol()
+
+  function createRenderer(options) {
+
+    const { createElement, createText, setElementText, setText, patchProps, insert } = options
+
+    function mountElement(vnode, container, anchor) {
+      const el = vnode.el = createElement(vnode.type)
+
+      if (typeof vnode.children === 'string') {
+        setElementText(el, vnode.children)
+      } else if (Array.isArray(vnode.children)) {
+        vnode.children.forEach(c => patch(null, c, el))
+      }
+
+      if (vnode.props) {
+        for (const key in vnode.props) {
+          patchProps(el, key, null, vnode.props[key])
+        }
+      }
+      insert(el, container, anchor)
+    }
+
+    function patchKeyedChildren(n1, n2, container) {
+      const oldChildren = n1.children
+      const newChildren = n2.children
+      let j = 0
+      let oldVnode = oldChildren[j]
+      let newVnode = newChildren[j]
+      while (oldVnode.key === newVnode.key) {
+        patch(oldVnode, newVnode, container)
+        j++
+        oldVnode = oldChildren[j]
+        newVnode = newChildren[j]
+      }
+      let oldEnd = oldChildren.length - 1
+      let newEnd = newChildren.length - 1
+      oldVnode = oldChildren[oldEnd]
+      newVnode = newChildren[newEnd]
+      while (oldVnode.key === newVnode.key) {
+        patch(oldVnode, newVnode, container)
+        oldVnode = oldChildren[--oldEnd]
+        newVnode = newChildren[--newEnd]
+
+      }
+
+      if (j > oldEnd && j <= newEnd) {
+        // 新增
+        const anchorIndex = newEnd + 1
+        const anchor = anchorIndex > newChildren.length ? null : newChildren[anchorIndex].el
+        while (j < newEnd) {
+          patch(null, newChildren[j++], container, anchor)
+        }
+      } else if (j > newEnd && j <= oldEnd) {
+        // 删除
+        while (j <= oldEnd) {
+          unmount(oldChildren[j++])
+        }
+      } else {
+        // 需要被patch的部分
+        const count = newEnd - j + 1
+        const source = new Array(count).fill(-1)
+        const oldStart = j
+        const newStart = j
+        let moved = false
+        let pos = 0
+        const keyIndex = {}
+        for (let i = newStart; i <= newEnd; i++) {
+          keyIndex[newChildren[i].key] = i
+        }
+        let patched = 0
+        for (let i = oldStart; i <= oldEnd; i++) {
+          oldVnode = oldChildren[i]
+          if (patched < count) {
+            const k = keyIndex[oldVnode.key]
+            if (k !== undefined) {
+              newVnode = newChildren[k]
+              patch(oldVnode, newVnode, container)
+              patched++
+              source[k - newStart] = i
+              if (k < pos) {
+                moved = true
+              } else {
+                pos = k
+              }
+            } else {
+              unmount(oldVnode)
+            }
+          } else {
+            unmount(oldVnode)
+          }
+        }
+
+        if (moved) {
+          const seq = lis(source)
+          let s = seq.length - 1
+          for (let i = count - 1; i >= 0; i--) {
+            if (source[i] === -1) {
+              // 新增
+              const pos = i + newStart
+              const newVnode = newChildren[pos]
+              const anchorIndex = pos + 1
+              const anchor = anchorIndex > newChildren.length ? null : newChildren[anchorIndex].el
+              patch(null, newVnode, container, anchor)
+            } else if (seq[s] !== i) {
+              // 移动
+              const pos = i + newStart
+              const newVnode = newChildren[pos]
+              const anchorIndex = pos + 1
+              const anchor = anchorIndex > newChildren.length ? null : newChildren[anchorIndex].el
+              insert(newVnode.el, container, anchor)
+            } else {
+              s--
+            }
+          }
+        }
+
+      }
+    }
+
+    function patchChildren(n1, n2, container) {
+      if (typeof n2.children === 'string') {
+        if (Array.isArray(n1.children)) {
+          n1.children.forEach(c => unmount(c))
+        }
+        setElementText(container, n2.children)
+      } else if (Array.isArray(n2.children)) {
+        if (Array.isArray(n1.children)) {
+          patchKeyedChildren(n1, n2, container)
+        } else if (typeof n1.children === 'string') {
+          setElementText(container, '')
+          n2.children.foEach(c => patch(null, c, container))
+        }
+      } else {
+        if (Array.isArray(n1.children)) {
+          n1.children.forEach(c => unmount(c))
+        } else if (typeof n1.children === 'string') {
+          setElementText(container, '')
+        }
+      }
+    }
+
+    function patchElement(n1, n2) {
+      const el = n2.el = n1.el
+      const oldProps = n1.props || {}
+      const newProps = n2.props || {}
+      for (const key in newProps) {
+        if (oldProps[key] !== newProps[key]) {
+          patch(el, key, oldProps[key], newProps[key])
+        }
+      }
+      for (const key in oldProps) {
+        if (!(key in newProps)) {
+          patch(el, key, oldProps[key], null)
+        }
+      }
+      patchChildren(n1, n2, el)
+    }
+
+    function patch(n1, n2, container, anchor) {
+      if (n1 && n1.type !== n2.type) {
+        unmount(n1)
+        n1 = null
+      }
+      const { type } = n2
+      if (typeof type === 'string') {
+        if (!n1) {
+          mountElement(n2, container, anchor)
+        } else {
+          patchElement(n1, n2)
+        }
+      } else if (type === Text) {
+        if (!n1) {
+          const el = n2.el = createText(n2.children)
+          insert(el, container)
+        } else {
+          const el = n2.el = n1.el
+          if (n2.children !== n1.children) {
+            setText(el, n2.children)
+          }
+        }
+      } else if (type === Fragment) {
+        if (!n1) {
+          if (Array.isArray(n2.children)) {
+            n2.children.forEach(c => patch(null, c, container))
+          } else {
+            patch(null, n2.children, container)
+          }
+        } else {
+          patchChildren(n1, n2, container)
+        }
+      }
+    }
+
+    function unmount(vnode) {
+      if (vnode.type === Fragment) {
+        if (Array.isArray(vnode.children)) {
+          vnode.children.foEach(c => unmount(c))
+        } else {
+          unmount(vnode.children)
+        }
+        return
+      }
+      const parent = vnode.el.parentNode
+      if (parent)
+        parent.removeChild(vnode.el)
+    }
+
+    function render(vnode, container) {
+      if (vnode) {
+        patch(container._vnode, vnode, container)
+      } else if (container._vnode) {
+        unmount(container._vnode)
+      }
+      container._vnode = vnode
+    }
+
+    return {
+      render
+    }
+  }
+
+  const renderer = createRenderer({
+    createElement(type) {
+      return document.createElement(type)
+    },
+    setElementText(el, content) {
+      el.textContent = content
+    },
+    createText(type) {
+      return document.createTextNode(type)
+    },
+    setText(el, text) {
+      el.nodeValue = text
+    },
+    insert(el, parent, anchor = null) {
+      parent.insertBefore(el, anchor)
+    },
+    patchProps(el, key, preVal, nextVal) {
+      if (/^on/.test(key)) {
+        const invokers = el._vei || (el._vei = {})
+        const invoker = invokers[key]
+        const name = key.slice(2).toLowerCase()
+        if (nextVal) {
+          if (invoker) {
+            invoker = el._vei[key] = function (e) {
+              if (e.timeStamp < invoker.attached) return
+              if (Array.isArray(invoker.value)) {
+                invoker.value.forEach(fn => fn(e))
+              } else {
+                invoker.value(e)
+              }
+            }
+            invoker.value = nextVal
+            invoker.attached = performance.now()
+            el.addEventListener(name, invoker)
+          } else {
+            invoker.value = nextVal
+          }
+        } else if (invoker) {
+          el.removeEventListener(name, invoker)
+        }
+      } else if (key === 'class') {
+        el.className = nextVal || ''
+      } else if (shouldSetAsProps(el, key)) {
+        const type = el[key]
+        if (typeof type === 'boolean' && nextVal === '') {
+          el[key] = true
+        } else {
+          el[key] = nextVal
+        }
+      } else {
+        el.setAttribute(key, nextVal)
+      }
+    }
+  })
+
+
+  const VNode1 = {
+    type: 'div',
+    children: [
+      { type: 'p', props: { name: 'simon' }, children: '1', key: 1 },
+      { type: 'p', children: '2', key: 2 },
+      { type: 'p', children: '3', key: 3 },
+      { type: 'p', children: '4', key: 4 },
+      { type: 'p', children: '6', key: 6 },
+      { type: 'p', children: '5', key: 5 },
+    ]
+  }
+  renderer.render(VNode1, document.querySelector('#app'))
+
+  const VNode2 = {
+    type: 'div',
+    children: [
+      { type: 'p', children: '1', key: 1 },
+      { type: 'p', children: '3', key: 3 },
+      { type: 'p', children: '4', key: 4 },
+      { type: 'p', children: '2', key: 2 },
+      { type: 'p', children: '7', key: 7 },
+      { type: 'p', children: '5', key: 5 },
+    ]
+  }
+
+  setTimeout(() => {
+    console.log('update')
+    renderer.render(VNode2, document.querySelector('#app'))
+  }, 400);
+
+</script>
